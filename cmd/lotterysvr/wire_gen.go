@@ -7,12 +7,6 @@
 package main
 
 import (
-	"github.com/2413Yang/lotterysvr/internal/biz"
-	"github.com/2413Yang/lotterysvr/internal/conf"
-	"github.com/2413Yang/lotterysvr/internal/data"
-	"github.com/2413Yang/lotterysvr/internal/server"
-	"github.com/2413Yang/lotterysvr/internal/service"
-
 	"github.com/go-kratos/kratos/v2"
 	"github.com/go-kratos/kratos/v2/log"
 )
