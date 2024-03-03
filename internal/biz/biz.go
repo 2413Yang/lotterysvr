@@ -7,7 +7,7 @@ import (
 )
 
 // ProviderSet is biz providers.
-var ProviderSet = wire.NewSet()
+var ProviderSet = wire.NewSet(NewLotteryCase, NewLimitCase, NewAdminCase)
 
 // Transaction 解耦biz与data层，biz层只调用接口的方法
 type Transaction interface {

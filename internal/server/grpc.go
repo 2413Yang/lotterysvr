@@ -4,7 +4,7 @@ import (
 	v1 "github.com/2413Yang/lotterysvr/api/lottery/v1"
 	"github.com/2413Yang/lotterysvr/internal/conf"
 	"github.com/2413Yang/lotterysvr/internal/service"
-
+	mmd "github.com/go-kratos/kratos/v2/middleware/metadata"
 	"github.com/go-kratos/kratos/v2/middleware/recovery"
 	"github.com/go-kratos/kratos/v2/transport/grpc"
 )
@@ -14,6 +14,9 @@ func NewGRPCServer(c *conf.Server, greeter *service.LotteryService) *grpc.Server
 	var opts = []grpc.ServerOption{
 		grpc.Middleware(
 			recovery.Recovery(),
+			mmd.Server(),
+			MiddlewareTraceID(),
+			MiddlewareLog(),
 		),
 	}
 	if c.Grpc.Network != "" {

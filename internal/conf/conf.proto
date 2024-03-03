@@ -21,8 +21,13 @@ message Server {
     string addr = 2;
     google.protobuf.Duration timeout = 3;
   }
+  message TASK {
+    string addr = 1;
+    repeated Task tasks = 2;
+  }
   HTTP http = 1;
   GRPC grpc = 2;
+  TASK task = 3;
 }
 
 message Data {
@@ -44,4 +49,10 @@ message Data {
   }
   Database database = 1;
   Redis redis = 2;
+}
+
+message Task {
+  string name = 1;
+  string type = 2;
+  string schedule = 3;
 }

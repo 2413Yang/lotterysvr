@@ -12,7 +12,7 @@ import (
 	"github.com/2413Yang/pkg/midware/log"
 )
 
-func (l *LotteryService) LotteryV1(ctx context.Context, req *pb.LotteryReq) (*pb.LotteryRsp, error) {
+func (l *LotteryService) LotteryV3(ctx context.Context, req *pb.LotteryReq) (*pb.LotteryRsp, error) {
 	rsp := &pb.LotteryRsp{
 		CommonRsp: &pb.CommonRspInfo{
 			Code:   int32(Success),
@@ -33,27 +33,27 @@ func (l *LotteryService) LotteryV1(ctx context.Context, req *pb.LotteryReq) (*pb
 	//if err != nil || jwtClaims == nil {
 	//	rsp.CommonRsp.Code = int32(ErrJwtParse)
 	//	log.Errorf("jwt parse err, token=%s,user_id=%s\n", req.Token, req.UserId)
-	//	return nil, fmt.Errorf("LotteryV1|jwt parse err")
+	//	return nil, fmt.Errorf("LotteryV3|jwt parse err")
 	//}
-	//log.Infof("LotteryV1|req====%+v", req)
 	userID := uint(req.UserId)
-	log.Infof("LotteryV1|user_id=%d", userID)
+	log.Infof("LotteryV3|user_id=%d", userID)
 	lockKey := fmt.Sprintf(constant.LotteryLockKeyPrefix+"%d", userID)
 	lock1 := lock.NewRedisLock(lockKey, lock.WithExpireSeconds(5), lock.WithWatchDogMode())
 
-	// 1. 用户抽奖分布式锁定,防止同一个用户同一时间抽奖抽奖多次
+	// 1. 用户抽奖分布式锁定,防重入
 	if err := lock1.Lock(ctx); err != nil {
 		rsp.CommonRsp.Code = int32(ErrInternalServer)
 		log.ErrorContextf(ctx, "LotteryHandler|Process:%v", err)
-		return nil, fmt.Errorf("LotteryV1|lock err")
+		return nil, fmt.Errorf("LotteryV3|lock err")
 	}
 	defer lock1.Unlock(ctx)
+
 	// 2. 验证用户今日抽奖次数
-	ok, err = l.limitCase.CheckUserDayLotteryTimes(ctx, userID)
+	ok, err = l.limitCase.CheckUserDayLotteryTimesWithCache(ctx, userID)
 	if err != nil {
 		rsp.CommonRsp.Code = int32(ErrInternalServer)
 		log.ErrorContextf(ctx, "LotteryHandler|CheckUserDayLotteryTimes:%v", err)
-		return nil, fmt.Errorf("LotteryV1|CheckUserDayLotteryTimes err")
+		return nil, fmt.Errorf("LotteryV3|CheckUserDayLotteryTimes err")
 	}
 	if !ok {
 		rsp.CommonRsp.Code = int32(ErrUserLimitInvalid)
@@ -70,11 +70,11 @@ func (l *LotteryService) LotteryV1(ctx context.Context, req *pb.LotteryReq) (*pb
 	}
 
 	// 4. 验证IP是否在ip黑名单
-	ok, blackIpInfo, err := l.limitCase.CheckBlackIP(ctx, req.Ip)
+	ok, blackIpInfo, err := l.limitCase.CheckBlackIPWithCache(ctx, req.Ip)
 	if err != nil {
 		rsp.CommonRsp.Code = int32(ErrInternalServer)
 		log.ErrorContextf(ctx, "LotteryHandler|CheckBlackIP:%v", err)
-		return nil, fmt.Errorf("LotteryV1|CheckBlackIP err")
+		return nil, fmt.Errorf("LotteryV3|CheckBlackIP err")
 	}
 	// ip黑明单生效
 	if !ok {
@@ -84,11 +84,11 @@ func (l *LotteryService) LotteryV1(ctx context.Context, req *pb.LotteryReq) (*pb
 	}
 
 	// 5. 验证用户是否在黑明单中
-	ok, blackUserInfo, err := l.limitCase.CheckBlackUser(ctx, userID)
+	ok, blackUserInfo, err := l.limitCase.CheckBlackUserWithCache(ctx, userID)
 	if err != nil {
 		rsp.CommonRsp.Code = int32(ErrInternalServer)
 		log.ErrorContextf(ctx, "LotteryHandler|CheckBlackUser:%v", err)
-		return nil, fmt.Errorf("LotteryV1|CheckBlackIP err")
+		return nil, fmt.Errorf("LotteryV3|CheckBlackIP err")
 	}
 	// 用户黑明单生效
 	if !ok {
@@ -100,11 +100,11 @@ func (l *LotteryService) LotteryV1(ctx context.Context, req *pb.LotteryReq) (*pb
 	// 6. 中奖逻辑实现
 	prizeCode := utils.Random(constant.PrizeCodeMax)
 	log.InfoContextf(ctx, "LotteryHandlerV1|prizeCode=%d\n", prizeCode)
-	prize, err := l.lotteryCase.GetPrize(ctx, prizeCode)
+	prize, err := l.lotteryCase.GetPrizeWithCache(ctx, prizeCode)
 	if err != nil {
 		rsp.CommonRsp.Code = int32(ErrInternalServer)
 		log.ErrorContextf(ctx, "LotteryHandler|CheckBlackUser:%v", err)
-		return nil, fmt.Errorf("LotteryV1|GetPrize err")
+		return nil, fmt.Errorf("LotteryV3|GetPrize err")
 	}
 	if prize == nil || prize.PrizeNum < 0 || (prize.PrizeNum > 0 && prize.LeftNum <= 0) {
 		rsp.CommonRsp.Code = int32(ErrNotWon)
@@ -113,11 +113,23 @@ func (l *LotteryService) LotteryV1(ctx context.Context, req *pb.LotteryReq) (*pb
 
 	// 7. 有剩余奖品发放
 	if prize.PrizeNum > 0 {
-		ok, err = l.lotteryCase.GiveOutPrize(ctx, int(prize.Id))
+		num, err := l.lotteryCase.GetPrizeNumWithPool(ctx, prize.Id)
 		if err != nil {
 			rsp.CommonRsp.Code = int32(ErrInternalServer)
 			log.ErrorContextf(ctx, "LotteryHandler|GiveOutPrize:%v", err)
-			return nil, fmt.Errorf("LotteryV1|GiveOutPrize err")
+			return nil, fmt.Errorf("LotteryV3|GetPrizeNumWithPool err")
+		}
+		// 奖品池奖品不够，不能发奖
+		if num <= 0 {
+			rsp.CommonRsp.Code = int32(ErrNotWon)
+			//log.InfoContextf(ctx, "LotteryHandler|GiveOutPrize|prize num not enough")
+			return rsp, nil
+		}
+		ok, err = l.lotteryCase.GiveOutPrizeWithPool(ctx, int(prize.Id))
+		if err != nil {
+			rsp.CommonRsp.Code = int32(ErrInternalServer)
+			log.ErrorContextf(ctx, "LotteryHandler|GiveOutPrize:%v", err)
+			return nil, fmt.Errorf("LotteryV3|GiveOutPrize err")
 		}
 		// 奖品不足，发放失败
 		if !ok {
@@ -130,11 +142,11 @@ func (l *LotteryService) LotteryV1(ctx context.Context, req *pb.LotteryReq) (*pb
 	/***如果中奖记录重要的的话，可以考虑用事务将下面逻辑包裹*****/
 	// 8. 发优惠券
 	if prize.PrizeType == constant.PrizeTypeCouponDiff {
-		code, err := l.lotteryCase.PrizeCouponDiff(ctx, int(prize.Id))
+		code, err := l.lotteryCase.PrizeCouponDiffWithCache(ctx, int(prize.Id))
 		if err != nil {
 			rsp.CommonRsp.Code = int32(ErrInternalServer)
 			//log.InfoContextf(ctx, "LotteryHandler|PrizeCouponDiff:%v", err)
-			return nil, fmt.Errorf("LotteryV1|PrizeCouponDiff err")
+			return nil, fmt.Errorf("LotteryV3|PrizeCouponDiff err")
 		}
 		if code == "" {
 			rsp.CommonRsp.Code = int32(ErrNotWon)
@@ -160,8 +172,8 @@ func (l *LotteryService) LotteryV1(ctx context.Context, req *pb.LotteryReq) (*pb
 	// 9 记录中奖纪录
 	if err := l.lotteryCase.LotteryResult(ctx, prize, userID, req.UserName, req.Ip, prizeCode); err != nil {
 		rsp.CommonRsp.Code = int32(ErrInternalServer)
-		log.ErrorContextf(ctx, "LotteryHandler|PrizeCouponDiff:%v", err)
-		return nil, fmt.Errorf("LotteryV1|LotteryResult err")
+		//log.InfoContextf(ctx, "LotteryHandler|PrizeCouponDiff:%v", err)
+		return nil, fmt.Errorf("LotteryV3|LotteryResult err")
 	}
 
 	// 10. 如果中了实物大奖，需要把ip和用户置于黑明单中一段时间，防止同一个用户频繁中大奖
@@ -171,13 +183,32 @@ func (l *LotteryService) LotteryV1(ctx context.Context, req *pb.LotteryReq) (*pb
 			UserName: req.UserName,
 			IP:       req.Ip,
 		}
-		log.InfoContextf(ctx, "LotteryV1|user_id=%d", userID)
 		if err := l.lotteryCase.PrizeLargeBlackLimit(ctx, blackUserInfo, blackIpInfo, &lotteryUserInfo); err != nil {
 			rsp.CommonRsp.Code = int32(ErrInternalServer)
-			log.ErrorContextf(ctx, "LotteryHandler|PrizeLargeBlackLimit:%v", err)
-			return nil, fmt.Errorf("LotteryV1|PrizeLargeBlackLimit err")
+			//log.InfoContextf(ctx, "LotteryHandler|PrizeLargeBlackLimit:%v", err)
+			return nil, fmt.Errorf("LotteryV3|PrizeLargeBlackLimit err")
 		}
 	}
 
 	return rsp, nil
+}
+
+// CronJobResetIPLotteryNumsTask 定时任务方法, 重置所有的IP抽奖次数
+func (l *LotteryService) CronJobResetIPLotteryNumsTask() {
+	l.limitCase.CronJobResetIPLotteryNums()
+}
+
+// CronJobResetUserLotteryNumsTask 定时任务方法, 重置今日用户抽奖次数
+func (l *LotteryService) CronJobResetUserLotteryNumsTask() {
+	l.limitCase.CronJobResetUserLotteryNums()
+}
+
+// CronJobResetAllPrizePlanTask 定时任务方法, 重置所有的奖品发奖计划
+func (l *LotteryService) CronJobResetAllPrizePlanTask() {
+	l.adminCase.ResetAllPrizePlan()
+}
+
+// CronJobFillAllPrizePoolTask 定时任务方法， 填充奖品池
+func (l *LotteryService) CronJobFillAllPrizePoolTask() {
+	l.adminCase.FillAllPrizePool()
 }

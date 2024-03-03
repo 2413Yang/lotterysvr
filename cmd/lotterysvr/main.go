@@ -5,7 +5,9 @@ import (
 	"os"
 
 	"github.com/2413Yang/lotterysvr/internal/conf"
+	"github.com/2413Yang/lotterysvr/internal/task"
 
+	"github.com/2413Yang/pkg/midware/discovery"
 	"github.com/go-kratos/kratos/v2"
 	"github.com/go-kratos/kratos/v2/config"
 	"github.com/go-kratos/kratos/v2/config/file"
@@ -31,7 +33,9 @@ func init() {
 	flag.StringVar(&flagconf, "conf", "../../configs", "config path, eg: -conf config.yaml")
 }
 
-func newApp(gs *grpc.Server, hs *http.Server) *kratos.App {
+func newApp(gs *grpc.Server, hs *http.Server, ts *task.TaskServer) *kratos.App {
+	//new reg with etcd client
+	reg := discovery.GetRegistrar()
 	return kratos.New(
 		kratos.ID(id),
 		kratos.Name(Name),
@@ -40,7 +44,9 @@ func newApp(gs *grpc.Server, hs *http.Server) *kratos.App {
 		kratos.Server(
 			gs,
 			hs,
+			ts,
 		),
+		kratos.Registrar(reg.Reg),
 	)
 }
 
@@ -71,7 +77,7 @@ func main() {
 		panic(err)
 	}
 
-	app, cleanup, err := wireApp(bc.Server, bc.Data)
+	app, cleanup, err := wireApp(bc.GetServer(), bc.GetData())
 	if err != nil {
 		panic(err)
 	}

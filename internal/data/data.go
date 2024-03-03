@@ -1,6 +1,9 @@
 package data
 
 import (
+	"context"
+
+	"github.com/2413Yang/lotterysvr/internal/biz"
 	"github.com/2413Yang/lotterysvr/internal/conf"
 
 	"github.com/2413Yang/pkg/midware/cache"
@@ -10,13 +13,35 @@ import (
 )
 
 // ProviderSet is data providers.
-var ProviderSet = wire.NewSet(NewData, NewDatabase, NewCache)
+var ProviderSet = wire.NewSet(NewData, NewDatabase, NewCache, NewCouponRepo, NewPrizeRepo,
+	NewResultRepo, NewBlackIpRepo, NewBlackUserRepo, NewLotteryTimesRepo, NewTransaction)
 
 // Data .
 type Data struct {
 	// TODO wrapped database client
 	db    *gorm.DB
 	cache *cache.Client
+}
+
+type contextTxKey struct{}
+
+func (d *Data) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		ctx = context.WithValue(ctx, contextTxKey{}, tx)
+		return fn(ctx)
+	})
+}
+
+func (d *Data) DB(ctx context.Context) *gorm.DB {
+	tx, ok := ctx.Value(contextTxKey{}).(*gorm.DB)
+	if ok {
+		return tx
+	}
+	return d.db
+}
+
+func NewTransaction(d *Data) biz.Transaction {
+	return d
 }
 
 // NewData .
